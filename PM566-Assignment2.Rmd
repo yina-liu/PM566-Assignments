@@ -11,7 +11,7 @@ library(leaflet)
 library(tidyverse)
 ```
 
-## Data Wrangling
+## Data Wrangling 
 ```{r}
 indi <- data.table::fread("/Users/apple1/Desktop/USC\ Biostatistics/PM566/HW/HW2/chs_individual.csv")
 regi <- data.table::fread("/Users/apple1/Desktop/USC\ Biostatistics/PM566/HW/HW2/chs_regional.csv")
