@@ -1,0 +1,213 @@
+---
+title: "PM566-Assignment3"
+author: "Yina Liu"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(httr)
+library(xml2)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(tidyverse)
+library(forcats)
+library(readr)
+```
+
+## APIs
+1. Using the NCBI API, look for papers that show up under the term “sars-cov-2 trial vaccine.” Look for the data in the pubmed database, and then retrieve the details of the paper as shown in lab 7. How many papers were you able to find?  
+
+```{r counter-pubmed, eval=TRUE, cache=TRUE}
+# Downloading the website
+website <- xml2::read_html("https://pubmed.ncbi.nlm.nih.gov/?term=sars-cov-2+trial+vaccine")
+# Finding the counts
+counts <- xml2::xml_find_first(website, "/html/body/main/div[9]/div[2]/div[2]/div[1]/span")
+# Turning it into text
+counts <- as.character(counts)
+# Extracting the data using regex
+stringr::str_extract(counts, "[0-9,]+")
+```
+
+560 papers were retrieved with the term "sars-cov-2 trial vaccine", which corresponds with the search on the PubMed database.  
+
+2. Using the list of pubmed ids you retrieved, download each papers’ details using the query parameter rettype = abstract. If you get more than 250 ids, just keep the first 250.  
+
+```{r papers-covid-vaccine, results="hide"}
+library(httr)
+query_ids <- GET(
+  url   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+  query = list(
+    db = "pubmed",
+               term = "sars-cov-2 trial vaccine",
+               retmax = 250)
+)
+# Extracting the content of the response of GET
+ids <- httr::content(query_ids)
+
+# Turn the result into a character vector
+ids <- as.character(ids)
+cat(ids)
+# Find all the ids 
+ids <- stringr::str_extract_all(ids, "<Id>[0-9]+</Id>")[[1]]
+# Remove all the leading and trailing <Id> </Id>. Make use of "|"
+ids <- stringr::str_remove_all(ids, "<Id>|</Id>")
+
+publications <- GET(
+  url   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+  query = list(
+    db = "pubmed",
+    id = paste(ids, collapse=","),
+      retmax = 250,
+    rettype = "abstract"
+    )
+)
+# Turning the output into character vector
+publications <- httr::content(publications)
+publications_txt <- as.character(publications)
+```
+
+3. As we did in lab 7. Create a dataset containing the following: Pubmed ID number, Title of the paper, Name of the journal where it was published, Publication date, and Abstract of the paper (if any).  
+
+```{r one-string-per-response, results="hide"}
+pub_char_list <- xml2::xml_children(publications)
+#Splits the xml file
+pub_char_list <- sapply(pub_char_list, as.character)
+
+# get titles
+titles <- str_extract(pub_char_list, "<ArticleTitle>(\\n|.)+</ArticleTitle>")
+titles <- str_remove_all(titles, "</?[[:alnum:]]+>")
+titles <- str_replace_all(titles, "\\s+", " ")
+table(is.na(titles))
+
+# get journals
+journals <- str_extract(pub_char_list, "<MedlineTA>(\\n|.)+</MedlineTA>")
+table(is.na(journals))
+
+# get publication date
+dates3 <- str_extract(pub_char_list, "<PubDate>(\\n|.)+</PubDate>")
+dates3 <- str_remove_all(dates3, "</?[[:alpha:]]+>")
+dates4 <- str_remove_all(dates3, "\n")
+dates <- str_remove_all(dates4, "</?[[:punct:]]+>")
+table(is.na(dates))
+
+# get abstracts
+abstracts <- str_extract(pub_char_list, "<Abstract>(\\n|.)+</Abstract>")
+abstracts <- str_remove_all(abstracts, "</?[[:alnum:]]+>")
+abstracts <- str_replace_all(abstracts, "\\s+", " ")
+table(is.na(abstracts))
+```
+
+
+```{r build-db, eval = TRUE}
+# Table of Articles
+database <- data.frame(
+  PubMedID = ids,
+  Title = titles,
+  Journal=journals,
+  PublicationDate=dates,
+  Abstract = abstracts
+)
+knitr::kable(database)
+```
+
+##Text Mining
+
+1. Tokenize the abstracts and count the number of each token. Do you see anything interesting? Does removing stop words change what tokens appear as the most frequent? What are the 5 most common tokens for each search term after removing stopwords?  
+
+```{r}
+data <- read_csv("https://raw.githubusercontent.com/USCbiostats/data-science-data/master/03_pubmed/pubmed.csv")
+
+data %>%
+  unnest_tokens(token, abstract)%>%
+  count(token, sort=TRUE)%>%
+  top_n(n=20, wt=n)%>%
+  ggplot(aes(x=n, y=fct_reorder(token, n)))+
+  geom_col()
+```
+
+Except for 'covid'/'19', 'patients', 'cancer', and 'prostate', other words are stop words.
+
+
+```{r}
+data %>%
+  unnest_tokens(token, abstract) %>%
+  filter(!(token %in% stop_words$word)) %>%
+  count(token, sort = TRUE)%>%
+  top_n(n=20, wt=n)%>%
+  ggplot(aes(x=n, y=fct_reorder(token, n)))+
+  geom_col()
+```
+
+
+```{r}
+tokens <- data %>%
+  unnest_tokens(token, abstract) %>%
+  filter(!(token %in% stop_words$word)) %>%
+  group_by(term) %>%
+  count(token, sort = TRUE) %>%
+  top_n(5, n) %>%
+  arrange(term, desc(n))
+
+knitr::kable(tokens, caption = "Table 1: The 5 most common tokens for each search term")
+```
+
+After removing stop words, 'Covid' and '19' become the two most frequent tokens having almost the same frequency (perhaps because they are linked words), with 'patients', 'cancer' and 'prostate' following.  
+
+
+2. Tokenize the abstracts into bigrams. Find the 10 most common bigram and visualize them with ggplot2.
+```{r}
+data %>%
+  unnest_ngrams(output= bigram, input= abstract, n=2) %>%
+  anti_join(stop_words, by = c("bigram" = "word")) %>%
+  count(bigram, sort = TRUE)%>%
+  top_n(n=10, wt=n)%>%
+  ggplot(aes(x=n, y=fct_reorder(bigram, n)))+
+  geom_col()
+```
+
+```{r}
+# Getting rid of stop words in bigram
+data2<- data%>%
+  unnest_ngrams(output= bigram, input= abstract, n=2) %>%
+  separate(col=bigram, into=c("word1", "word2"), sep = " ")%>%
+  select(word1, word2)
+
+data2 %>%
+  anti_join(
+    tidytext::stop_words %>% select(word), by = c("word1" = "word")
+  )%>%
+  anti_join(
+    tidytext::stop_words %>% select(word), by = c("word2" = "word")
+  )%>%
+  count(word1, word2, sort=TRUE)%>%
+  top_n(n=10, wt=n)
+```
+
+After removing the stop words, the most frequent bigrams are "covid 19", "prostate cancer", "pre eclampsia", "cystic fibrosis", and "coronavirus disease". 
+
+3. Calculate the TF-IDF value for each word-search term combination. (here you want the search term to be the “document”) What are the 5 tokens from each search term with the highest TF-IDF value? How are the results different from the answers you got in question 1?
+
+```{r}
+tf_idf <- data %>%
+  unnest_tokens(token, abstract) %>%
+  filter(!(token %in% stop_words$word)) %>%
+  group_by(term) %>%
+  count(token, sort = TRUE) %>%
+  bind_tf_idf(token, term, n) %>%
+  top_n(5, n) %>%
+  arrange(term, desc(tf_idf)) 
+
+knitr::kable(tf_idf[, c(1:3,6)],
+            caption = "Table 2: Top 5 tokens with the highest TF-IDF from each term ")
+  
+```
+
+- As for the term 'covid', 'covid' and 'pandemic' have the highest TF-IDF value, with the TF-IDF values of '19', 'patients', and 'disease' being 0.  
+- As for the term 'cystic fibrosis', 'cf' becomes the first term instead of 'fibrosis'.  
+- As for the term 'meningitis', 'patients; and 'clinical' are excluded (with TF-IDF = 0).  
+- As for the term 'preeclampsia', TF-IDF values of 'pre' and 'woman' are 0.  
+- As for the term 'prostate cancer', only one token -- 'prostate' has the non-zero TF-IDF value.  
+
